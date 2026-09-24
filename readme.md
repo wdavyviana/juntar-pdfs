@@ -28,7 +28,7 @@ Uma alternativa simples ao modo gratuito de sites como o iLovePDF. Aqui você ju
 > Não precisa instalar nada. É só baixar e abrir.
 
 ### 1. Baixe o programa
-Acesse a página de **[Releases](https://github.com/wdavyviana/juntar-pdf/releases/latest)** e clique em **`Juntar PDFs.exe`** para baixar.
+Acesse a página de **[Releases](https://github.com/wdavyviana/juntar-pdfs/releases/latest)** e clique em **`Juntar PDFs.exe`** para baixar.
 
 ### 2. Abra o arquivo
 Dê **dois cliques** no `Juntar PDFs.exe`. Ele normalmente fica na pasta **Downloads**.
@@ -83,8 +83,8 @@ O `.exe` é só para Windows. No Mac ou no Linux, rode direto pelo Python (veja 
 Requer **Python 3.10+**.
 
 ```bash
-git clone https://github.com/wdavyviana/juntar-pdf.git
-cd juntar-pdf
+git clone https://github.com/wdavyviana/juntar-pdfs.git
+cd juntar-pdfs
 pip install -r requirements.txt
 python juntar_pdfs.py
 ```
@@ -109,7 +109,7 @@ O arquivo fica em `dist/Juntar PDFs.exe`.
 
 ### Estrutura
 ```
-juntar-pdf/
+juntar-pdfs/
 ├── juntar_pdfs.py      # aplicativo completo
 ├── requirements.txt    # dependências
 ├── .gitignore
