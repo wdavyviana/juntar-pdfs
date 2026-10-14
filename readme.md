@@ -14,7 +14,7 @@ Uma alternativa simples ao modo gratuito de sites como o iLovePDF. Aqui você ju
 
 | | |
 |---|---|
-| ♾️ **Sem limites** | Quantidade de arquivos, tamanho e número de usos ilimitados |
+| ♾️ **Sem limites** | Quantidade de arquivos, tamanho e número de usos ilimitados. Junta até PDFs de centenas de MB e repara arquivos danificados |
 | 🔒 **Privado** | Tudo acontece no seu computador. Nenhum arquivo é enviado para a internet |
 | 🖱️ **Arrastar e soltar** | Arraste PDFs, ou pastas inteiras, direto para a janela |
 | 🗜️ **Compressão** | Reduz o tamanho de PDFs digitalizados e com fotos, em 3 níveis (Leve, Recomendada, Forte). Também comprime um único PDF, sem juntar |
@@ -118,8 +118,8 @@ O arquivo fica em `dist/Juntar PDFs.exe`.
 
 ### Tecnologias
 - [PySide6](https://doc.qt.io/qtforpython-6/): interface gráfica (Qt)
-- [pypdf](https://pypdf.readthedocs.io/): leitura e junção dos PDFs
-- [PyMuPDF](https://pymupdf.readthedocs.io/) e [Pillow](https://python-pillow.org/): compressão das imagens
+- [PyMuPDF](https://pymupdf.readthedocs.io/): leitura, reparo e junção dos PDFs (inclusive arquivos enormes)
+- [Pillow](https://python-pillow.org/): compressão das imagens
 - [PyInstaller](https://pyinstaller.org/): geração do executável
 
 ### Estrutura

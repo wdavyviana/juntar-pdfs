@@ -4,7 +4,7 @@ opcionalmente, comprimir o resultado (ou comprimir um único PDF).
 Sem limites de quantidade, tamanho ou uso. Tudo roda localmente.
 
 Requisitos:
-    pip install PySide6 pypdf pymupdf pillow
+    pip install PySide6 pymupdf pillow
 
 Executar:
     python juntar_pdfs.py
@@ -12,12 +12,10 @@ Executar:
 
 import multiprocessing
 import os
-import shutil
+import queue
 import sys
-import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
-from pypdf import PdfReader, PdfWriter
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -56,15 +54,12 @@ NIVEIS_COMPRESSAO = [
 NIVEL_PADRAO = 1
 
 
-def comprimir_pdf(origem: str, destino: str, dpi_limite: int, dpi_alvo: int, qualidade: int) -> None:
-    """Reduz a resolução e recomprime as imagens do PDF e limpa a estrutura.
+def recomprimir_imagens(doc, dpi_limite: int, dpi_alvo: int, qualidade: int) -> None:
+    """Reduz a resolução e recomprime as imagens de um PDF já aberto (PyMuPDF).
 
     Cada imagem é tratada uma única vez, mesmo que apareça em várias páginas
     (ex.: logo no cabeçalho), e só é trocada se o resultado ficar menor.
-
-    Roda em um processo separado (veja MergeWorker): o PyMuPDF segura o
-    interpretador durante o trabalho pesado e, numa thread comum, isso
-    congelaria a janela em arquivos grandes.
+    Preserva preto e branco puro, imagens com transparência e imagens pequenas.
     """
     import io
     import math
@@ -72,82 +67,117 @@ def comprimir_pdf(origem: str, destino: str, dpi_limite: int, dpi_alvo: int, qua
     import pymupdf
     from PIL import Image
 
-    doc = pymupdf.open(origem)
+    # 1) Para cada imagem, a MENOR resolução em que ela aparece impressa
+    #    (o maior tamanho na página) — é essa que precisa ser preservada.
+    menor_dpi: dict[int, float] = {}
+    info: dict[int, tuple] = {}
+    for pagina in doc:
+        for img in pagina.get_images(full=True):
+            xref, smask, largura, altura, bpc = img[0], img[1], img[2], img[3], img[4]
+            info[xref] = (smask, largura, altura, bpc)
+            for ret in pagina.get_image_rects(xref):
+                area_pol2 = (ret.width / 72) * (ret.height / 72)
+                if area_pol2 <= 0:
+                    continue
+                dpi = math.sqrt(largura * altura / area_pol2)  # funciona até girada
+                menor_dpi[xref] = min(menor_dpi.get(xref, dpi), dpi)
+
+    # 2) Recomprime cada imagem uma única vez.
+    for xref, dpi in menor_dpi.items():
+        smask, largura, altura, bpc = info[xref]
+        # Mantém: transparência (logos recortados), preto e branco puro
+        # (já vem com compressão ótima) e imagens pequenas.
+        if smask or bpc == 1 or largura * altura < 100_000:
+            continue
+        try:
+            pix = pymupdf.Pixmap(doc, xref)
+            if pix.alpha or pix.n - pix.alpha not in (1, 3):
+                pix = pymupdf.Pixmap(pymupdf.csRGB, pix)  # CMYK etc. → RGB
+                if pix.alpha:
+                    continue
+            modo = "L" if pix.n == 1 else "RGB"
+            imagem = Image.frombytes(modo, (pix.width, pix.height), pix.samples)
+
+            if dpi > dpi_limite:
+                fator = dpi_alvo / dpi
+                novo = (max(1, round(pix.width * fator)), max(1, round(pix.height * fator)))
+                imagem = imagem.resize(novo, Image.LANCZOS)
+
+            buffer = io.BytesIO()
+            imagem.save(buffer, "JPEG", quality=qualidade, optimize=True)
+            tamanho_atual = len(doc.xref_stream_raw(xref) or b"")
+            if buffer.tell() < tamanho_atual:
+                # Troca o conteúdo no próprio objeto da imagem: todas as
+                # páginas que a usam passam a ver a versão nova, sem cópias.
+                doc.update_stream(xref, buffer.getvalue(), compress=0)
+                for chave in ("DecodeParms", "Decode", "Intent"):
+                    doc.xref_set_key(xref, chave, "null")
+                doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                doc.xref_set_key(xref, "Width", str(imagem.width))
+                doc.xref_set_key(xref, "Height", str(imagem.height))
+                doc.xref_set_key(xref, "BitsPerComponent", "8")
+                doc.xref_set_key(
+                    xref, "ColorSpace", "/DeviceGray" if modo == "L" else "/DeviceRGB"
+                )
+        except Exception:  # noqa: BLE001 — imagem exótica: deixa como está
+            continue
+
+
+def processar_pdfs(arquivos: list[str], destino: str, nivel: int | None, fila) -> int:
+    """Lê, (opcionalmente) comprime e junta os PDFs, salvando em `destino`.
+
+    Roda em um processo separado: o PyMuPDF segura o interpretador durante o
+    trabalho pesado e, numa thread comum, isso congelaria a janela. O
+    progresso volta para a janela pela `fila`.
+
+    Usa o PyMuPDF (e não o pypdf) porque ele abre PDFs enormes, com imagens de
+    centenas de MB guardadas sem compressão, e repara arquivos com a
+    estrutura danificada — situações em que o pypdf desiste.
+
+    Cada arquivo é comprimido ANTES de entrar no PDF final, então o programa
+    nunca precisa montar o documento inteiro sem compressão na memória.
+    """
+    import pymupdf
+
+    saida = pymupdf.open()
     try:
-        if doc.needs_pass and not doc.authenticate(""):
-            raise ValueError("arquivo protegido por senha")
-
-        # 1) Para cada imagem, a MENOR resolução em que ela aparece impressa
-        #    (o maior tamanho na página) — é essa que precisa ser preservada.
-        menor_dpi: dict[int, float] = {}
-        info: dict[int, tuple] = {}
-        for pagina in doc:
-            for img in pagina.get_images(full=True):
-                xref, smask, largura, altura, bpc = img[0], img[1], img[2], img[3], img[4]
-                info[xref] = (smask, largura, altura, bpc)
-                for ret in pagina.get_image_rects(xref):
-                    area_pol2 = (ret.width / 72) * (ret.height / 72)
-                    if area_pol2 <= 0:
-                        continue
-                    dpi = math.sqrt(largura * altura / area_pol2)  # funciona até girada
-                    menor_dpi[xref] = min(menor_dpi.get(xref, dpi), dpi)
-
-        # 2) Recomprime cada imagem uma única vez.
-        for xref, dpi in menor_dpi.items():
-            smask, largura, altura, bpc = info[xref]
-            # Mantém: transparência (logos recortados), preto e branco puro
-            # (já vem com compressão ótima) e imagens pequenas.
-            if smask or bpc == 1 or largura * altura < 100_000:
-                continue
+        total = len(arquivos)
+        for i, caminho in enumerate(arquivos, start=1):
+            nome = os.path.basename(caminho)
+            fila.put(("arquivo", i - 1, nome))
             try:
-                pix = pymupdf.Pixmap(doc, xref)
-                if pix.alpha or pix.n - pix.alpha not in (1, 3):
-                    pix = pymupdf.Pixmap(pymupdf.csRGB, pix)  # CMYK etc. → RGB
-                    if pix.alpha:
-                        continue
-                modo = "L" if pix.n == 1 else "RGB"
-                imagem = Image.frombytes(modo, (pix.width, pix.height), pix.samples)
+                doc = pymupdf.open(caminho, filetype="pdf")
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"Falha ao ler “{nome}”: {e}") from e
+            try:
+                if doc.needs_pass and not doc.authenticate(""):
+                    raise RuntimeError(f"Falha ao ler “{nome}”: arquivo protegido por senha")
+                if nivel is not None:
+                    _, dpi_limite, dpi_alvo, qualidade = NIVEIS_COMPRESSAO[nivel]
+                    recomprimir_imagens(doc, dpi_limite, dpi_alvo, qualidade)
+                saida.insert_pdf(doc)
+            finally:
+                doc.close()
+            fila.put(("arquivo", i, nome))
 
-                if dpi > dpi_limite:
-                    fator = dpi_alvo / dpi
-                    novo = (max(1, round(pix.width * fator)), max(1, round(pix.height * fator)))
-                    imagem = imagem.resize(novo, Image.LANCZOS)
-
-                buffer = io.BytesIO()
-                imagem.save(buffer, "JPEG", quality=qualidade, optimize=True)
-                tamanho_atual = len(doc.xref_stream_raw(xref) or b"")
-                if buffer.tell() < tamanho_atual:
-                    # Troca o conteúdo no próprio objeto da imagem: todas as
-                    # páginas que a usam passam a ver a versão nova, sem cópias.
-                    doc.update_stream(xref, buffer.getvalue(), compress=0)
-                    for chave in ("DecodeParms", "Decode", "Intent"):
-                        doc.xref_set_key(xref, chave, "null")
-                    doc.xref_set_key(xref, "Filter", "/DCTDecode")
-                    doc.xref_set_key(xref, "Width", str(imagem.width))
-                    doc.xref_set_key(xref, "Height", str(imagem.height))
-                    doc.xref_set_key(xref, "BitsPerComponent", "8")
-                    doc.xref_set_key(
-                        xref, "ColorSpace", "/DeviceGray" if modo == "L" else "/DeviceRGB"
-                    )
-            except Exception:  # noqa: BLE001 — imagem exótica: deixa como está
-                continue
-
-        doc.save(
+        fila.put(("etapa", f"Salvando o PDF final ({len(saida)} páginas)…"))
+        paginas = len(saida)
+        saida.save(
             destino,
-            garbage=4,          # remove objetos sem uso e duplicados
-            deflate=True,       # comprime os fluxos que estiverem sem compressão
-            deflate_fonts=True,
+            garbage=3,          # remove objetos sem uso
+            deflate=True,       # comprime (sem perda) o que estiver guardado cru
             use_objstms=1,      # agrupa objetos pequenos em fluxos compactados
         )
+        return paginas
     finally:
-        doc.close()
+        saida.close()
 
 
 class MergeWorker(QObject):
-    """Junta (e, se pedido, comprime) em segundo plano para a janela não travar."""
+    """Coordena o processamento em segundo plano para a janela não travar."""
 
-    progresso = Signal(int, str)            # (índice concluído, nome do arquivo)
-    etapa = Signal(str)                     # texto da etapa atual (ex.: compressão)
+    progresso = Signal(int, str)            # (arquivos concluídos, nome do arquivo)
+    etapa = Signal(str)                     # texto da etapa atual (ex.: salvando)
     concluido = Signal(str, int, int, int)  # (saída, páginas, bytes antes, bytes depois)
     erro = Signal(str)
 
@@ -158,69 +188,43 @@ class MergeWorker(QObject):
         self.nivel = nivel  # None = sem compressão
 
     def run(self):
-        pasta_temp = tempfile.mkdtemp(prefix="juntar_pdfs_")
+        # Salva primeiro num arquivo temporário na mesma pasta e só troca no
+        # final: se der erro no meio, nenhum arquivo pela metade fica para trás.
+        temporario = self.destino + ".parcial"
         try:
-            juntado = self._juntar(os.path.join(pasta_temp, "juntado.pdf"))
-            total_paginas = len(PdfReader(juntado).pages)
-            antes = os.path.getsize(juntado)
-
-            if self.nivel is None:
-                shutil.move(juntado, self.destino)
-                self.concluido.emit(self.destino, total_paginas, antes, antes)
-                return
-
-            self.etapa.emit("Comprimindo… (pode levar alguns minutos em arquivos grandes)")
-            _, dpi_limite, dpi_alvo, qualidade = NIVEIS_COMPRESSAO[self.nivel]
-            comprimido = os.path.join(pasta_temp, "comprimido.pdf")
-            with ProcessPoolExecutor(max_workers=1) as executor:
-                executor.submit(
-                    comprimir_pdf, juntado, comprimido, dpi_limite, dpi_alvo, qualidade
-                ).result()
-
-            depois = os.path.getsize(comprimido)
-            # Se a compressão não ajudou (ex.: PDF só de texto), entrega o original.
-            if depois >= antes:
-                shutil.move(juntado, self.destino)
-                depois = antes
-            else:
-                shutil.move(comprimido, self.destino)
-            self.concluido.emit(self.destino, total_paginas, antes, depois)
+            antes = sum(os.path.getsize(c) for c in self.arquivos)
+            with multiprocessing.Manager() as gerente:
+                fila = gerente.Queue()
+                with ProcessPoolExecutor(max_workers=1) as executor:
+                    tarefa = executor.submit(
+                        processar_pdfs, self.arquivos, temporario, self.nivel, fila
+                    )
+                    while True:
+                        try:
+                            self._repassar(fila.get(timeout=0.2))
+                        except queue.Empty:
+                            if tarefa.done():
+                                break
+                    while not fila.empty():
+                        self._repassar(fila.get())
+                    paginas = tarefa.result()
+            os.replace(temporario, self.destino)
+            self.concluido.emit(self.destino, paginas, antes, os.path.getsize(self.destino))
         except Exception as e:  # noqa: BLE001
             self.erro.emit(str(e) or e.__class__.__name__)
         finally:
-            shutil.rmtree(pasta_temp, ignore_errors=True)
+            if os.path.exists(temporario):
+                try:
+                    os.remove(temporario)
+                except OSError:
+                    pass
 
-    def _juntar(self, saida: str) -> str:
-        # Um único arquivo (modo só comprimir): usa direto, sem regravar.
-        if len(self.arquivos) == 1:
-            caminho = self.arquivos[0]
-            self._abrir(caminho)
-            self.progresso.emit(1, os.path.basename(caminho))
-            return caminho
-
-        writer = PdfWriter()
-        try:
-            for i, caminho in enumerate(self.arquivos, start=1):
-                writer.append(self._abrir(caminho))
-                self.progresso.emit(i, os.path.basename(caminho))
-            with open(saida, "wb") as f:
-                writer.write(f)
-        finally:
-            writer.close()
-        return saida
-
-    @staticmethod
-    def _abrir(caminho: str) -> PdfReader:
-        nome = os.path.basename(caminho)
-        try:
-            reader = PdfReader(caminho)
-            if reader.is_encrypted:
-                # Tenta abrir PDFs protegidos só contra edição (senha vazia)
-                if not reader.decrypt(""):
-                    raise ValueError("arquivo protegido por senha")
-            return reader
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"Falha ao ler “{nome}”: {e}") from e
+    def _repassar(self, mensagem):
+        tipo, *dados = mensagem
+        if tipo == "arquivo":
+            self.progresso.emit(*dados)
+        elif tipo == "etapa":
+            self.etapa.emit(*dados)
 
 
 class ListaPdfs(QListWidget):
@@ -447,9 +451,14 @@ class JanelaPrincipal(QWidget):
             self.progresso.setRange(0, total)
             self.progresso.setValue(0)
 
-    def ao_progredir(self, i: int, nome: str):
-        self.progresso.setValue(i)
-        self.progresso.setFormat(f"{i}/{self.progresso.maximum()} — {nome}")
+    def ao_progredir(self, concluidos: int, nome: str):
+        total = self.progresso.maximum()
+        self.progresso.setValue(concluidos)
+        if concluidos < total:
+            acao = "Comprimindo" if self.chk_comprimir.isChecked() else "Lendo"
+            self.progresso.setFormat(f"{concluidos}/{total} — {acao} “{nome}”…")
+        else:
+            self.progresso.setFormat(f"{concluidos}/{total}")
 
     def ao_mudar_etapa(self, texto: str):
         # Barra "ocupada" (animada): a compressão não tem progresso por página.
@@ -467,9 +476,8 @@ class JanelaPrincipal(QWidget):
                 detalhe = (f"\nTamanho: {formatar_tamanho(antes)} → {formatar_tamanho(depois)} "
                            f"({reducao:.0f}% menor)")
             else:
-                detalhe = (f"\nA compressão não reduziu este arquivo (provavelmente quase não "
-                           f"tem imagens), então ele foi salvo sem alteração "
-                           f"({formatar_tamanho(antes)}).")
+                detalhe = (f"\nO tamanho quase não mudou ({formatar_tamanho(depois)}): "
+                           f"os arquivos têm poucas imagens para comprimir.")
         resp = QMessageBox.question(
             self, "Concluído",
             f"PDF criado com {paginas} página(s):\n{destino}{detalhe}\n\nDeseja abrir a pasta?",
