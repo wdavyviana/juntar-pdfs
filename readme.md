@@ -1,6 +1,6 @@
 # 📎 Juntar PDFs
 
-**Una vários PDFs em um só, direto no seu computador: sem limites, sem cadastro e sem enviar seus arquivos para a internet.**
+**Una vários PDFs em um só e comprima o resultado, direto no seu computador: sem limites, sem cadastro e sem enviar seus arquivos para a internet.**
 
 Uma alternativa simples ao modo gratuito de sites como o iLovePDF. Aqui você junta quantos arquivos quiser, do tamanho que quiser, quantas vezes quiser.
 
@@ -17,6 +17,7 @@ Uma alternativa simples ao modo gratuito de sites como o iLovePDF. Aqui você ju
 | ♾️ **Sem limites** | Quantidade de arquivos, tamanho e número de usos ilimitados |
 | 🔒 **Privado** | Tudo acontece no seu computador. Nenhum arquivo é enviado para a internet |
 | 🖱️ **Arrastar e soltar** | Arraste PDFs, ou pastas inteiras, direto para a janela |
+| 🗜️ **Compressão** | Reduz o tamanho de PDFs digitalizados e com fotos, em 3 níveis (Leve, Recomendada, Forte). Também comprime um único PDF, sem juntar |
 | ↕️ **Ordem do seu jeito** | Reorganize arrastando os arquivos, com os botões ▲ ▼ ou em ordem alfabética (A–Z) |
 | 📊 **Barra de progresso** | Acompanhe a junção, sem travar, mesmo com arquivos grandes |
 | 📂 **Abre a pasta no final** | Ao terminar, mostra quantas páginas o PDF tem e abre a pasta onde ele foi salvo |
@@ -42,8 +43,11 @@ Isso acontece porque o programa não tem assinatura digital paga, e **não signi
 ### 4. Pronto! Agora é só usar
 1. Clique em **Adicionar PDFs…** ou arraste os arquivos para a janela
 2. Organize a ordem como preferir
-3. Clique em **Juntar e salvar…** e escolha onde salvar
-4. Pronto: seu PDF unido está na pasta escolhida 🎉
+3. *(Opcional)* Marque **Comprimir o PDF final** e escolha o nível
+4. Clique em **Juntar e salvar…** e escolha onde salvar
+5. Pronto: seu PDF está na pasta escolhida 🎉
+
+> 🗜️ **Só quer comprimir um arquivo?** Adicione um único PDF, marque **Comprimir o PDF final** e clique em **Comprimir e salvar…**
 
 > 💡 **Dica:** clique com o botão direito no `.exe` → **Enviar para** → **Área de trabalho (criar atalho)** para abrir sempre com um clique.
 
@@ -55,6 +59,16 @@ Isso acontece porque o programa não tem assinatura digital paga, e **não signi
 <summary><b>O programa demora para abrir. É normal?</b></summary>
 
 Sim. Por ser um arquivo único, ele leva alguns segundos para abrir. Depois disso, funciona normalmente.
+</details>
+
+<details>
+<summary><b>Qual nível de compressão usar?</b></summary>
+
+- **Leve:** reduz as imagens para 200 DPI. Use quando precisar de qualidade de impressão.
+- **Recomendada:** 150 DPI. Ótima leitura na tela e boa impressão. É o padrão.
+- **Forte:** 100 DPI. Menor arquivo possível, ainda legível na tela.
+
+A compressão age nas **imagens** (páginas digitalizadas, fotos). Texto digital continua nítido. Se o PDF quase não tiver imagens, ele não vai diminuir muito, e o programa avisa e salva sem alteração.
 </details>
 
 <details>
@@ -105,6 +119,7 @@ O arquivo fica em `dist/Juntar PDFs.exe`.
 ### Tecnologias
 - [PySide6](https://doc.qt.io/qtforpython-6/): interface gráfica (Qt)
 - [pypdf](https://pypdf.readthedocs.io/): leitura e junção dos PDFs
+- [PyMuPDF](https://pymupdf.readthedocs.io/) e [Pillow](https://python-pillow.org/): compressão das imagens
 - [PyInstaller](https://pyinstaller.org/): geração do executável
 
 ### Estrutura
